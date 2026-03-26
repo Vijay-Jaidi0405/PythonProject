@@ -3,7 +3,7 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QMessageBox, QProgressDialog, QSplitter,
-    QScrollArea, QGroupBox
+    QScrollArea, QGroupBox, QTableWidgetItem
 )
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from ui.widgets.common import (
@@ -153,8 +153,11 @@ class SchedulePage(QWidget):
             if r["period_status"] == "Calculated" and r["interest_amount"]:
                 running += r["interest_amount"]
             rnd = r.get("rounding_decimals") or 4
+            period_item = QTableWidgetItem()
+            period_item.setData(Qt.EditRole, int(r["period_number"]))
+            period_item.setTextAlignment(Qt.AlignVCenter | Qt.AlignRight)
             table_rows.append([
-                str(r["period_number"]),
+                period_item,
                 make_date_item(r["period_start_date"]),
                 make_date_item(r["period_end_date"]),
                 make_date_item(r["obs_start_date"]),
