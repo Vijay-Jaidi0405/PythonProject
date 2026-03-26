@@ -1,0 +1,138 @@
+"""ui/main_window.py — Main application window with side nav."""
+
+from PySide6.QtWidgets import (
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
+    QLabel, QPushButton, QStackedWidget, QStatusBar,
+    QSizePolicy
+)
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QFont, QIcon
+
+from ui.styles import APP_STYLE, NAV_WIDTH
+from ui.pages.dashboard   import DashboardPage
+from ui.pages.deals       import DealsPage
+from ui.pages.rates       import RatesPage
+from ui.pages.schedule    import SchedulePage
+from ui.pages.calc_single import CalcSinglePage
+from ui.pages.calc_batch  import CalcBatchPage
+from ui.pages.history     import HistoryPage
+
+
+NAV_ITEMS = [
+    # (icon_text, label, page_class, section_before)
+    ("▣",  "Dashboard",          DashboardPage,   ""),
+    ("≡",  "Deal Master",        DealsPage,       "DEALS"),
+    ("↑",  "SOFR Rates",         RatesPage,       "RATES & CALC"),
+    ("⊡",  "Payment Schedule",   SchedulePage,    ""),
+    ("◎",  "Single CUSIP Calc",  CalcSinglePage,  ""),
+    ("⊕",  "Batch Calculation",  CalcBatchPage,   ""),
+    ("☰",  "History / Audit",    HistoryPage,     "REPORTS"),
+]
+
+
+class NavButton(QPushButton):
+    def __init__(self, icon_txt: str, label: str, parent=None):
+        super().__init__(f"  {icon_txt}  {label}", parent)
+        self.setObjectName("NavBtn")
+        self.setCheckable(False)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(46)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def set_active(self, active: bool):
+        self.setProperty("active", "true" if active else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, db_factory):
+        super().__init__()
+        self._db = db_factory
+        self._nav_btns = []
+        self._pages = []
+        self.setWindowTitle("SOFR Interest Calculator")
+        self.setMinimumSize(900, 600)
+        self.showMaximized()
+        self.setStyleSheet(APP_STYLE)
+        self._build_ui()
+        self._switch_page(0)
+
+    def _build_ui(self):
+        root = QWidget()
+        self.setCentralWidget(root)
+        root_lay = QHBoxLayout(root)
+        root_lay.setContentsMargins(0, 0, 0, 0)
+        root_lay.setSpacing(0)
+
+        # ── Nav panel ─────────────────────────────────────────
+        nav = QWidget()
+        nav.setObjectName("NavPanel")
+        nav.setFixedWidth(NAV_WIDTH)
+        nav_lay = QVBoxLayout(nav)
+        nav_lay.setContentsMargins(0, 0, 0, 0)
+        nav_lay.setSpacing(0)
+
+        # App title
+        title = QLabel("SOFR")
+        title.setObjectName("AppTitle")
+        sub   = QLabel("Interest Calculator")
+        sub.setObjectName("AppSubtitle")
+        nav_lay.addWidget(title)
+        nav_lay.addWidget(sub)
+
+        sep_line = QWidget(); sep_line.setFixedHeight(1)
+        sep_line.setStyleSheet("background: rgba(255,255,255,0.1);")
+        nav_lay.addWidget(sep_line)
+        nav_lay.addSpacing(10)
+
+        # Stack widget for pages
+        self._stack = QStackedWidget()
+        self._stack.setObjectName("ContentStack")
+
+        last_section = ""
+        for i, (icon, label, PageClass, section) in enumerate(NAV_ITEMS):
+            if section and section != last_section:
+                sec_lbl = QLabel(section)
+                sec_lbl.setObjectName("NavSep")
+                nav_lay.addWidget(sec_lbl)
+                last_section = section
+
+            btn = NavButton(icon, label)
+            btn.clicked.connect(lambda _, idx=i: self._switch_page(idx))
+            nav_lay.addWidget(btn)
+            self._nav_btns.append(btn)
+
+            page = PageClass(self._db)
+            self._stack.addWidget(page)
+            self._pages.append(page)
+
+        nav_lay.addStretch()
+
+        version = QLabel("v1.0  ·  SQLite + PySide6")
+        version.setObjectName("NavVersion")
+        nav_lay.addWidget(version)
+
+        root_lay.addWidget(nav)
+        root_lay.addWidget(self._stack, 1)
+
+        # Status bar
+        bar = QStatusBar()
+        self.setStatusBar(bar)
+        self._status = QLabel("Ready")
+        bar.addWidget(self._status)
+        self._db_lbl = QLabel("")
+        bar.addPermanentWidget(self._db_lbl)
+
+        from core.database import DB_PATH
+        self._db_lbl.setText(f"DB: {DB_PATH}")
+
+    def _switch_page(self, idx: int):
+        for i, btn in enumerate(self._nav_btns):
+            btn.set_active(i == idx)
+        self._stack.setCurrentIndex(idx)
+        _, label, _, _ = NAV_ITEMS[idx]
+        self._status.setText(f"{label}")
+
+    def status(self, msg: str):
+        self._status.setText(msg)
