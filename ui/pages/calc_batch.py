@@ -306,7 +306,9 @@ class CalcBatchPage(QWidget):
             if not silent:
                 QMessageBox.information(
                     self, "PDF Saved",
-                    f"Batch report saved to:\n{path}"
+                    f"Batch report saved successfully.\n\n"
+                    f"File:\n{path}\n\n"
+                    f"Folder:\n{path.parent}"
                 )
             else:
                 self.window().status(f"Batch PDF saved: {path.name}")

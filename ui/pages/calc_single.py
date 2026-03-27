@@ -877,7 +877,9 @@ class CalcSinglePage(QWidget):
             path = generate_calculation_pdf(self._last_result)
             if not silent:
                 QMessageBox.information(self, "PDF Saved",
-                    f"Report saved to:\n{path}")
+                    f"Report saved successfully.\n\n"
+                    f"File:\n{path}\n\n"
+                    f"Folder:\n{path.parent}")
             else:
                 try:
                     self.window().status(f"PDF saved: {path.name}")
