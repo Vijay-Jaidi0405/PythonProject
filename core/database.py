@@ -305,6 +305,20 @@ def _shift_date_back(d: date, n: int) -> date:
     return d - timedelta(days=n)
 
 
+def _shift_business_days_back(d: date, n: int) -> date:
+    """Shift backward by n business days using weekends and seeded holidays."""
+    if n <= 0:
+        return d
+
+    remaining = n
+    cur = d
+    while remaining > 0:
+        cur -= timedelta(days=1)
+        if cur.weekday() < 5 and cur not in _HOLIDAY_SET:
+            remaining -= 1
+    return cur
+
+
 def _nearest_rate_date(conn, d: date) -> date | None:
     """Nearest SOFR rate date on or before d (from sofr_rates table)."""
     if _is_good_friday(d):
@@ -476,20 +490,20 @@ def _calc_compounded(conn, deal: dict, p_start: date, p_end: date,
                      dc: int = 360):
     lb = deal["look_back_days"]
     if deal["shifted_interest"] == "Y":
-        eff_start = _shift_date_back(p_start, lb)
-        eff_end   = _shift_date_back(p_end,   lb)
+        eff_start = _shift_business_days_back(p_start, lb)
+        eff_end   = _shift_business_days_back(p_end,   lb)
     else:
         eff_start, eff_end = p_start, p_end
 
-    obs_start = _shift_date_back(eff_start, lb)
-    obs_end   = _shift_date_back(eff_end,   lb)
+    obs_start = _shift_business_days_back(eff_start, lb)
+    obs_end   = _shift_business_days_back(eff_end,   lb)
     accrual   = _deal_accrual_days(deal, eff_start, eff_end, obs_start, obs_end)
 
     product    = 1.0
     daily_rows = []
 
     for cal_date, wt in _iter_business_days(eff_start, eff_end):
-        obs_date  = _shift_date_back(cal_date, lb)
+        obs_date  = _shift_business_days_back(cal_date, lb)
         is_gf     = _is_good_friday(obs_date)
         row       = _get_rate(conn, obs_date)
         if row:
@@ -515,15 +529,15 @@ def _calc_compounded(conn, deal: dict, p_start: date, p_end: date,
 def _calc_simple_average(conn, deal: dict, p_start: date, p_end: date,
                          dc: int = 360):
     lb        = deal["look_back_days"]
-    obs_start = _shift_date_back(p_start, lb)
-    obs_end   = _shift_date_back(p_end,   lb)
+    obs_start = _shift_business_days_back(p_start, lb)
+    obs_end   = _shift_business_days_back(p_end,   lb)
     accrual   = _deal_accrual_days(deal, p_start, p_end, obs_start, obs_end)
 
     sum_w, sum_d = 0.0, 0
     daily_rows   = []
 
     for cal_date, wt in _iter_business_days(p_start, p_end):
-        obs_date = _shift_date_back(cal_date, lb)
+        obs_date = _shift_business_days_back(cal_date, lb)
         is_gf    = _is_good_friday(obs_date)
         row      = _get_rate(conn, obs_date)
         if row:
@@ -569,9 +583,9 @@ def _calc_index(conn, deal: dict, p_start: date, p_end: date,
     """
     lb = deal["look_back_days"]
 
-    # Observation dates: period boundaries shifted back by lookback
-    obs_start_raw = _shift_date_back(p_start, lb)
-    obs_end_raw   = _shift_date_back(p_end,   lb)
+    # Observation dates: period boundaries shifted back by business-day lookback
+    obs_start_raw = _shift_business_days_back(p_start, lb)
+    obs_end_raw   = _shift_business_days_back(p_end,   lb)
 
     # Find nearest published index dates on or before each obs date
     obs_start_d = _nearest_index_date(conn, obs_start_raw)
@@ -903,15 +917,15 @@ def generate_schedule(conn, cusip: str, rebuild: bool = True):
 
         # Shifted-interest: effective accrual period shifted back by lookback
         if si:
-            eff_ps = _nearest_next_bday(_shift_date_back(ps, lb))
-            eff_pe = _nearest_next_bday(_shift_date_back(pe, lb))
+            eff_ps = _nearest_next_bday(_shift_business_days_back(ps, lb))
+            eff_pe = _nearest_next_bday(_shift_business_days_back(pe, lb))
         else:
             eff_ps = ps
             eff_pe = pe
 
         # Observation window = effective dates shifted back by lookback.
-        obs_s = _nearest_next_bday(_shift_date_back(eff_ps, lb))
-        obs_e = _nearest_next_bday(_shift_date_back(eff_pe, lb))
+        obs_s = _nearest_next_bday(_shift_business_days_back(eff_ps, lb))
+        obs_e = _nearest_next_bday(_shift_business_days_back(eff_pe, lb))
 
         acc   = _deal_accrual_days(deal, eff_ps, eff_pe, obs_s, obs_e)
         unadj = pay_date   # payment date already adjusted in _gen_periods
@@ -1294,193 +1308,89 @@ def auto_mature_deals(conn) -> int:
 
 def import_rates_from_excel(conn, path: str) -> tuple[int, list[str]]:
     """
-    Import SOFR rates from Excel.
+    Import SOFR overnight rates from Excel into the sofr_rates table only.
 
-    Supports two layouts automatically:
-
-    Layout A — NY Fed format (newyorkfed.org download):
-        Columns: DATE | BENCHMARK NAME | RATE (%) | 1ST PERCENTILE (%) |
-                 25TH PERCENTILE (%) | 75TH PERCENTILE (%) |
-                 99TH PERCENTILE (%) | VOLUME ($Billions)
-        NOTE: No SOFR Index column in this format — the index is computed
-        from the daily rates using ACT/360 compounding starting from 1.0
-        anchored at the earliest date in the file (or existing DB value).
-
-    Layout B — Full format (with pre-computed SOFR Index):
-        Columns: Date | SOFR Rate (%) | SOFR Index | Day Count Factor (optional)
+    Accepted layouts:
+    1. NY Fed SOFR download with headers such as DATE / BENCHMARK NAME / RATE (%)
+    2. Simplified file with two columns such as Date / Rate (%)
     """
     import pandas as pd
 
     df = pd.read_excel(path, header=0)
+    raw_cols = list(df.columns)
+    norm_cols = [str(c).strip().lower().replace("_", " ") for c in raw_cols]
 
-    # Normalise column names for matching
-    raw_cols  = list(df.columns)
-    norm_cols = [str(c).strip().lower() for c in raw_cols]
+    def _pick_col(predicate):
+        for i, col in enumerate(norm_cols):
+            if predicate(col):
+                return raw_cols[i]
+        return None
 
-    # ── Detect layout ────────────────────────────────────────────────────────
-    is_nyfed = any("benchmark" in c for c in norm_cols)
-
-    if is_nyfed:
-        # NY Fed layout — find DATE and RATE (%) columns by position/name
-        date_col = None
-        rate_col = None
-        for i, c in enumerate(norm_cols):
-            if "date" in c and date_col is None:
-                date_col = raw_cols[i]
-            if "rate" in c and "%" in c and rate_col is None:
-                rate_col = raw_cols[i]
-            # Also accept plain "rate (%)" style
-            if c in ("rate (%)", "rate(%)", "sofr rate (%)") and rate_col is None:
-                rate_col = raw_cols[i]
-
-        if date_col is None or rate_col is None:
-            # Fallback: assume first col = date, third col = rate
-            date_col = raw_cols[0]
-            rate_col = raw_cols[2]
-
-        # Drop rows where date or rate is missing / non-parseable
-        df = df[[date_col, rate_col]].copy()
-        df.columns = ["_date", "_rate"]
-        df = df.dropna(subset=["_date", "_rate"])
-
-        # Filter to SOFR rows only (exclude SOFR30, SOFR90 etc if present)
-        # NY Fed files sometimes have a BENCHMARK NAME column — skip non-SOFR rows
-        if "benchmark name" in norm_cols or "benchmark_name" in norm_cols:
-            bm_col = raw_cols[norm_cols.index("benchmark name")] \
-                     if "benchmark name" in norm_cols \
-                     else raw_cols[norm_cols.index("benchmark_name")]
-            # Re-read with benchmark column included
-            df2 = pd.read_excel(path, header=0)
-            df2.columns = [str(c).strip() for c in df2.columns]
-            df2 = df2.rename(columns={
-                date_col: "_date",
-                rate_col: "_rate",
-                bm_col:   "_bm",
-            })
-            df2 = df2[["_date", "_rate", "_bm"]].dropna(subset=["_date", "_rate"])
-            # Keep only plain SOFR rows (not SOFR30DRATE, SOFR90DRATE etc)
-            df2 = df2[df2["_bm"].astype(str).str.strip().str.upper() == "SOFR"]
-            df = df2[["_date", "_rate"]].copy()
-
-        # Parse dates and rates
-        parsed = []
-        errors_parse = []
-        for _, row in df.iterrows():
-            try:
-                d    = pd.to_datetime(row["_date"]).date()
-                rate = float(str(row["_rate"]).replace(",", "."))
-                parsed.append((d, rate))
-            except Exception as e:
-                errors_parse.append(str(e))
-
-        if not parsed:
-            raise ValueError(
-                "No valid SOFR rows found in file. "
-                f"Detected NY Fed format. Date col='{date_col}', "
-                f"Rate col='{rate_col}'. Sample data: {df.head(3).to_dict()}"
+    date_col = _pick_col(
+        lambda c: c in {"date", "effective date", "effective date "}
+        or c.startswith("effective date")
+    )
+    rate_col = _pick_col(
+        lambda c: c in {"rate (%)", "rate(%)", "sofr rate (%)", "sofr rate"}
+        or c.startswith("rate (%)")
+    )
+    if rate_col is None:
+        rate_col = _pick_col(
+            lambda c: (
+                "rate" in c
+                and "type" not in c
+                and "target" not in c
+                and "intraday" not in c
+                and "30-day" not in c
+                and "90-day" not in c
+                and "180-day" not in c
+                and "index" not in c
             )
+        )
+    benchmark_col = _pick_col(lambda c: c in {"benchmark name", "benchmark", "rate type"})
 
-        # Sort ascending so index computation goes forward in time
-        parsed.sort(key=lambda x: x[0])
+    if not date_col or not rate_col:
+        raise ValueError(
+            f"Cannot find Date and Rate columns. Found columns: {raw_cols}. "
+            "Expected a file with columns like Date and Rate (%)."
+        )
 
-        # ── Compute SOFR Index ────────────────────────────────────────────
-        # Index_t = Index_{t-1} × (1 + r_{t-1} × dcf_{t-1} / 360)
-        # Anchor: check if DB already has an index value just before our range
-        first_date = parsed[0][0]
-        anchor_row = conn.execute("""
-            SELECT rate_date, sofr_index FROM sofr_index
-            WHERE rate_date < ?
-            ORDER BY rate_date DESC LIMIT 1
-        """, (first_date.isoformat(),)).fetchone()
+    rename_map = {date_col: "_date", rate_col: "_rate"}
+    selected_cols = [date_col, rate_col]
+    if benchmark_col:
+        selected_cols.append(benchmark_col)
+        rename_map[benchmark_col] = "_benchmark"
 
-        if anchor_row:
-            running_index = anchor_row["sofr_index"]
-        else:
-            running_index = 1.0   # Start at 1.0 if no prior data
+    work_df = df[selected_cols].copy()
+    work_df = work_df.rename(columns=rename_map)
+    work_df = work_df.dropna(subset=["_date", "_rate"])
 
-        inserted, errors = 0, []
-        for i, (d, rate) in enumerate(parsed):
-            try:
-                # Day count factor: Fri=3 (covers Sat+Sun), else 1
-                dcf = 3 if d.weekday() == 4 else 1
+    if "_benchmark" in work_df.columns:
+        benchmark_values = work_df["_benchmark"].astype(str).str.strip().str.upper()
+        sofr_mask = benchmark_values.isin({"SOFR", "SOFR RATE", "SECURED OVERNIGHT FINANCING RATE"})
+        if sofr_mask.any():
+            work_df = work_df[sofr_mask]
 
-                # Advance the index using the PREVIOUS day's rate
-                # (index on date T reflects compounding through T-1)
-                # On first row we use the anchor; subsequent rows use prior rate
-                if i > 0:
-                    prev_d, prev_rate = parsed[i - 1]
-                    prev_dcf = 3 if prev_d.weekday() == 4 else 1
-                    running_index = running_index * (
-                        1.0 + prev_rate / 100.0 * prev_dcf / 360.0
-                    )
+    inserted, errors = 0, []
+    for _, row in work_df.iterrows():
+        try:
+            d = pd.to_datetime(row["_date"], errors="raise").date()
+            rate_text = str(row["_rate"]).replace(",", "").replace("%", "").strip()
+            rate = float(rate_text)
+            dcf = 3 if d.weekday() == 4 else 1
+            conn.execute("""
+                INSERT OR REPLACE INTO sofr_rates
+                    (rate_date, sofr_rate, day_count_factor)
+                VALUES (?, ?, ?)
+            """, (d.isoformat(), rate, dcf))
+            inserted += 1
+        except Exception as e:
+            errors.append(f"{row.get('_date', '?')}: {e}")
 
-                conn.execute("""
-                    INSERT OR REPLACE INTO sofr_rates
-                        (rate_date, sofr_rate, day_count_factor)
-                    VALUES (?, ?, ?)
-                """, (d.isoformat(), rate, dcf))
-                # Store computed index in sofr_index table
-                conn.execute("""
-                    INSERT OR REPLACE INTO sofr_index (rate_date, sofr_index)
-                    VALUES (?, ?)
-                """, (d.isoformat(), round(running_index, 8)))
-                inserted += 1
+    if inserted == 0 and not errors:
+        raise ValueError("No valid SOFR rate rows were found in the selected Excel file.")
 
-                # Good Friday is handled at calculation time:
-                # use Thursday's publication if available, otherwise Wednesday's.
-
-            except Exception as e:
-                errors.append(f"{d}: {e}")
-
-        errors = errors_parse + errors
-        return inserted, errors
-
-    else:
-        # ── Layout B: Full format with pre-computed SOFR Index ────────────
-        col_map = {}
-        for i, c in enumerate(norm_cols):
-            if "date" in c and "date" not in col_map:
-                col_map["date"] = raw_cols[i]
-            elif "index" in c and "sofr_index" not in col_map:
-                col_map["sofr_index"] = raw_cols[i]
-            elif "rate" in c and "sofr_rate" not in col_map:
-                col_map["sofr_rate"] = raw_cols[i]
-            elif "day" in c and "count" in c:
-                col_map["day_count_factor"] = raw_cols[i]
-
-        missing = [k for k in ("date", "sofr_rate", "sofr_index")
-                   if k not in col_map]
-        if missing:
-            raise ValueError(
-                f"Could not identify columns: {missing}. "
-                f"Found columns: {raw_cols}. "
-                "Expected either NY Fed format (DATE | BENCHMARK NAME | RATE (%)) "
-                "or full format (Date | SOFR Rate (%) | SOFR Index)."
-            )
-
-        inserted, errors = 0, []
-        for _, row in df.iterrows():
-            try:
-                d    = pd.to_datetime(row[col_map["date"]]).date()
-                rate = float(row[col_map["sofr_rate"]])
-                idx  = float(row[col_map["sofr_index"]])
-                dcf  = (int(row[col_map["day_count_factor"]])
-                        if "day_count_factor" in col_map
-                        else (3 if d.weekday() == 4 else 1))
-                conn.execute("""
-                    INSERT OR REPLACE INTO sofr_rates
-                        (rate_date, sofr_rate, day_count_factor)
-                    VALUES (?, ?, ?)
-                """, (d.isoformat(), rate, dcf))
-                conn.execute("""
-                    INSERT OR REPLACE INTO sofr_index (rate_date, sofr_index)
-                    VALUES (?, ?)
-                """, (d.isoformat(), idx))
-                inserted += 1
-            except Exception as e:
-                errors.append(str(e))
-
-        return inserted, errors
+    return inserted, errors
 
 
 def get_rates(conn, start: str | None = None,
@@ -1542,30 +1452,30 @@ def get_rates_summary(conn) -> dict:
 
 def import_index_from_excel(conn, path: str) -> tuple[int, list[str]]:
     """
-    Import SOFR Index values from a standalone NY Fed Index Excel file.
-    Expected columns: DATE/Effective Date | BENCHMARK NAME | INDEX/SOFR Index
+    Import SOFR Index values from Excel into the sofr_index table only.
+
+    Accepted layouts:
+    1. NY Fed SOFR Averages & Index download with headers such as
+       DATE / BENCHMARK NAME / INDEX
+    2. Simplified file with two columns such as Date / Index
     """
     import pandas as pd
 
     df = pd.read_excel(path, header=0)
-    raw_cols  = list(df.columns)
-    norm_cols = [str(c).strip().lower() for c in raw_cols]
+    raw_cols = list(df.columns)
+    norm_cols = [str(c).strip().lower().replace("_", " ") for c in raw_cols]
 
-    def _n(col): return col.strip().lower()
+    def _pick_col(predicate):
+        for i, col in enumerate(norm_cols):
+            if predicate(col):
+                return raw_cols[i]
+        return None
 
-    DATE_VARIANTS  = {"date", "effective date", "effectivedate"}
-    INDEX_VARIANTS = {"sofr index", "sofrindex", "index"}
-    BM_VARIANTS    = {"rate type", "ratetype", "benchmark name", "benchmarkname",
-                      "benchmark", "type"}
-    SOFRAI_VALUES  = {"sofrai", "sofr index", "sofr compounded index",
-                      "sofr averages and index"}
-
-    date_col  = next((raw_cols[i] for i,c in enumerate(norm_cols)
-                      if _n(c) in DATE_VARIANTS), None)
-    index_col = next((raw_cols[i] for i,c in enumerate(norm_cols)
-                      if _n(c) in INDEX_VARIANTS), None)
-    bm_col    = next((raw_cols[i] for i,c in enumerate(norm_cols)
-                      if _n(c) in BM_VARIANTS), None)
+    date_col = _pick_col(lambda c: c in {"date", "effective date"} or "date" in c)
+    index_col = _pick_col(
+        lambda c: c in {"index", "sofr index"} or ("index" in c and "percent" not in c)
+    )
+    benchmark_col = _pick_col(lambda c: c in {"benchmark name", "benchmark", "rate type", "type"})
 
     if not date_col or not index_col:
         raise ValueError(
@@ -1574,21 +1484,34 @@ def import_index_from_excel(conn, path: str) -> tuple[int, list[str]]:
             "Expected columns: Date, SOFR Index (or similar)."
         )
 
-    df["_date"] = pd.to_datetime(df[date_col], errors="coerce").dt.date
-    df = df.dropna(subset=["_date"])
+    rename_map = {date_col: "_date", index_col: "_index"}
+    selected_cols = [date_col, index_col]
+    if benchmark_col:
+        selected_cols.append(benchmark_col)
+        rename_map[benchmark_col] = "_benchmark"
 
-    if bm_col:
-        mask = df[bm_col].astype(str).str.strip().str.lower().isin(
-            {v.lower() for v in SOFRAI_VALUES}
-        )
-        if mask.any():
-            df = df[mask]
+    work_df = df[selected_cols].copy()
+    work_df = work_df.rename(columns=rename_map)
+    work_df["_date"] = pd.to_datetime(work_df["_date"], errors="coerce").dt.date
+    work_df = work_df.dropna(subset=["_date", "_index"])
+
+    if "_benchmark" in work_df.columns:
+        benchmark_values = work_df["_benchmark"].astype(str).str.strip().str.upper()
+        index_mask = benchmark_values.isin({
+            "SOFRAI",
+            "SOFR INDEX",
+            "SOFR COMPOUNDED INDEX",
+            "SOFR AVERAGES AND INDEX",
+        })
+        if index_mask.any():
+            work_df = work_df[index_mask]
 
     inserted, errors = 0, []
-    for _, row in df.iterrows():
+    for _, row in work_df.iterrows():
         try:
-            d   = row["_date"]
-            idx = float(str(row[index_col]).replace(",", "."))
+            d = row["_date"]
+            idx_text = str(row["_index"]).replace(",", "").strip()
+            idx = float(idx_text)
             conn.execute("""
                 INSERT OR REPLACE INTO sofr_index (rate_date, sofr_index)
                 VALUES (?, ?)
@@ -1596,6 +1519,9 @@ def import_index_from_excel(conn, path: str) -> tuple[int, list[str]]:
             inserted += 1
         except Exception as e:
             errors.append(f"{row.get('_date','?')}: {e}")
+
+    if inserted == 0 and not errors:
+        raise ValueError("No valid SOFR index rows were found in the selected Excel file.")
 
     return inserted, errors
 

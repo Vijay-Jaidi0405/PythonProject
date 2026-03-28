@@ -167,8 +167,8 @@ class RatesPage(QWidget):
 
         lay.addWidget(PageHeader(
             "SOFR Rate Tables",
-            "Manage SOFR overnight rates and SOFR compounded index — "
-            "import from Excel or enter / edit individual values"
+            "Manage SOFR overnight rates and SOFR compounded index in separate tables — "
+            "upload NY Fed Excel files directly or enter / edit individual values"
         ))
 
         # ── Two panels side by side: import + manual entry ────────────────────
@@ -225,7 +225,7 @@ class RatesPage(QWidget):
         rate_lay.addLayout(rate_btn_row)
 
         self._rate_tbl = DataTable([
-            "Date", "SOFR Rate (%)", "Day Count Factor", "Daily Accrual Factor"
+            "Effective Date", "SOFR Rate (%)", "Day Count Factor", "Daily Accrual Factor"
         ])
         rate_lay.addWidget(self._rate_tbl)
         tabs.addTab(rate_tab, "SOFR Overnight Rates")
@@ -321,7 +321,10 @@ class RatesPage(QWidget):
         panel.add_layout(imp_row)
         panel.add_widget(self._rate_prog)
 
-        hint = QLabel("NY Fed SOFR Rate file — columns: <b>DATE</b>, <b>RATE (%)</b>")
+        hint = QLabel(
+            "Upload NY Fed SOFR Rate Excel directly — expected columns: "
+            "<b>DATE</b>, <b>RATE (%)</b>"
+        )
         hint.setStyleSheet("color:#6B7280; font-size:10px;")
         panel.add_widget(hint)
 
@@ -379,7 +382,8 @@ class RatesPage(QWidget):
         panel.add_widget(self._idx_prog)
 
         hint = QLabel(
-            "NY Fed SOFR Averages &amp; Index file — columns: <b>DATE</b>, <b>INDEX</b>"
+            "Upload NY Fed SOFR Averages &amp; Index Excel directly — expected columns: "
+            "<b>DATE</b>, <b>INDEX</b>"
         )
         hint.setStyleSheet("color:#6B7280; font-size:10px;")
         panel.add_widget(hint)
@@ -540,7 +544,8 @@ class RatesPage(QWidget):
     def _on_import_done(self, mode, n, errs, prog, ibtn):
         prog.setVisible(False)
         ibtn.setEnabled(True)
-        msg = f"{n} rows imported."
+        label = "SOFR Rate" if mode == "rate" else "SOFR Index"
+        msg = f"{n} {label} rows imported into the {label} table."
         if errs:
             msg += f"\n{len(errs)} errors:\n" + "\n".join(errs[:5])
         QMessageBox.information(self, "Import Complete", msg)

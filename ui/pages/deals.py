@@ -246,7 +246,7 @@ class DealDialog(QDialog):
         hint = QLabel(
             "<i>Interest period includes the start date and excludes the end date.  "
             "Observation dates are derived by shifting the period boundary back by "
-            "lookback days, then rolling forward to the next business day.</i>"
+            "lookback business days, then rolling forward to the next business day.</i>"
         )
         hint.setStyleSheet(
             "color:#6B7280;font-size:11px;padding:8px 24px;"
@@ -325,7 +325,7 @@ class DealDialog(QDialog):
         try:
             from core.database import (
                 _nearest_next_bday, _nearest_prev_bday,
-                _add_months, _shift_date_back, _HOLIDAY_SET
+                _add_months, _shift_business_days_back, _HOLIDAY_SET
             )
             from datetime import date, timedelta
 
@@ -349,14 +349,14 @@ class DealDialog(QDialog):
 
             # Shifted interest: effective period shifted back by lookback
             if sh_int:
-                eff_ps = _nearest_next_bday(_shift_date_back(p_start, lb))
-                eff_pe = _nearest_next_bday(_shift_date_back(p_end, lb))
+                eff_ps = _nearest_next_bday(_shift_business_days_back(p_start, lb))
+                eff_pe = _nearest_next_bday(_shift_business_days_back(p_end, lb))
             else:
                 eff_ps, eff_pe = p_start, p_end
 
             # Observation dates = effective dates shifted back by lookback
-            obs_s = _nearest_next_bday(_shift_date_back(eff_ps, lb))
-            obs_e = _nearest_next_bday(_shift_date_back(eff_pe, lb))
+            obs_s = _nearest_next_bday(_shift_business_days_back(eff_ps, lb))
+            obs_e = _nearest_next_bday(_shift_business_days_back(eff_pe, lb))
 
             accrual = (p_end - p_start).days
 
