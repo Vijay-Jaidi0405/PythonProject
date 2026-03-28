@@ -10,6 +10,7 @@ Install:  pip install reportlab
 from pathlib import Path
 from datetime import datetime, date
 from typing import Optional
+import re
 
 # ---------------------------------------------------------------------------
 # Colour palette (matches app UI)
@@ -25,8 +26,24 @@ DARK   = (0.102, 0.102, 0.118)   # #1A1A1E
 GREY   = (0.420, 0.443, 0.502)   # #6B7280
 LGREY  = (0.953, 0.953, 0.969)   # #F3F4F6
 
-PDF_DIR = Path(__file__).parent.parent / "PDF Reports"
-#PDF_DIR = '/home/vijay/Desktop/SOFR Reports'
+PDF_DIR = Path("/home/vijay/Desktop/SOFR Reports")
+
+
+def _safe_path_part(value, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        text = fallback
+    text = re.sub(r"[<>:\"/\\\\|?*]+", "_", text)
+    text = re.sub(r"\s+", " ", text).strip().replace(" ", "_")
+    text = text.strip("._")
+    return text or fallback
+
+
+def _report_folder_name(result: dict, created_at: datetime) -> str:
+    deal_name = _safe_path_part(result.get("deal_name"), "Unknown_Deal")
+    cusip = _safe_path_part(result.get("cusip"), "UNKNOWN")
+    created = created_at.strftime("%Y%m%d")
+    return f"{deal_name}_{cusip}_{created}"
 
 def _fmt_money(v) -> str:
     if v is None: return "—"
@@ -57,7 +74,7 @@ def generate_calculation_pdf(result: dict,
     result : dict
         The dict returned by core.database.calculate_interest()
     output_dir : Path, optional
-        Where to save the PDF. Defaults to <project>/PDF Reports/
+        Where to save the PDF. Defaults to /home/vijay/Desktop/SOFR Reports/
 
     Returns
     -------
@@ -80,14 +97,15 @@ def generate_calculation_pdf(result: dict,
         )
 
     # ── Output path ──────────────────────────────────────────────────────────
-    out_dir = output_dir or PDF_DIR
-    #out_dir = PDF_DIR
-    out_dir.mkdir(parents=True, exist_ok=True)
+    created_at = datetime.now()
+    base_dir = output_dir or PDF_DIR
+    report_dir = base_dir / _report_folder_name(result, created_at)
+    report_dir.mkdir(parents=True, exist_ok=True)
 
-    ts     = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts     = created_at.strftime("%Y%m%d_%H%M%S")
     cusip  = result.get("cusip", "UNKNOWN")
     fname  = f"SOFR_Calc_{cusip}_{ts}.pdf"
-    fpath  = out_dir / fname
+    fpath  = report_dir / fname
 
     # ── Document setup ───────────────────────────────────────────────────────
     doc = SimpleDocTemplate(
@@ -161,7 +179,7 @@ def generate_calculation_pdf(result: dict,
     # ── Story ────────────────────────────────────────────────────────────────
     story = []
     rnd   = result.get("rounding_decimals", 6)
-    calc_ts = datetime.now().strftime("%d-%b-%Y %H:%M:%S")
+    calc_ts = created_at.strftime("%d-%b-%Y %H:%M:%S")
 
     method_color_map = {
         "Compounded in Arrears":     c_green,
