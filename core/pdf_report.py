@@ -73,6 +73,17 @@ def _fmt_pct_value(v, dec=4) -> str:
         return str(v)
 
 
+def _metric_font_size(value) -> int:
+    text = str(value or "")
+    if len(text) >= 14:
+        return 12
+    if len(text) >= 11:
+        return 13
+    if len(text) >= 9:
+        return 14
+    return 16
+
+
 def generate_calculation_pdf(result: dict,
                               output_dir: Optional[Path] = None) -> Path:
     """
@@ -250,7 +261,7 @@ def generate_calculation_pdf(result: dict,
          "Rounding",     f"{rnd} decimals"],
     ]
 
-    cw = [W*0.14, W*0.36, W*0.14, W*0.36]
+    cw = [W*0.18, W*0.32, W*0.18, W*0.32]
     deal_tbl = Table(deal_rows, colWidths=cw)
     tst = detail_tbl_style()
     # Shade label columns
@@ -305,12 +316,14 @@ def generate_calculation_pdf(result: dict,
 
     metric_rows = []
     for label, value, color in metrics:
+        value_font_size = _metric_font_size(value)
         metric_rows.append(
             Table(
                 [[Paragraph(label.upper(), s_label)],
                  [Paragraph(value, ParagraphStyle(
                      "mv", parent=base["Normal"],
-                     fontSize=16, fontName="Helvetica-Bold",
+                     fontSize=value_font_size, leading=value_font_size + 2,
+                     fontName="Helvetica-Bold",
                      textColor=color))]],
                 colWidths=[W/4 - 3*mm],
             )
