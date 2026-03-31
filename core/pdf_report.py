@@ -64,6 +64,15 @@ def _fmt_date(v) -> str:
     except: return str(v)
 
 
+def _fmt_pct_value(v, dec=4) -> str:
+    if v is None:
+        return "—"
+    try:
+        return f"{float(v):.{dec}f}%"
+    except:
+        return str(v)
+
+
 def generate_calculation_pdf(result: dict,
                               output_dir: Optional[Path] = None) -> Path:
     """
@@ -360,23 +369,84 @@ def generate_calculation_pdf(result: dict,
         story.append(formula_tbl)
         story.append(Spacer(1, 10))
 
-    # ── SOFR Index specific: show index values ───────────────────────────────
+    # ── Detailed supporting table ────────────────────────────────────────────
+    daily_rows = result.get("daily_rows") or []
     if method == "SOFR Index":
         story.append(sect_header("Index Values Used", c_amber))
         story.append(Spacer(1, 4))
-        idx_hdr = ["", "Date", "SOFR Index Value"]
+        idx_hdr = ["", "Date", "SOFR Rate (%)", "SOFR Index Value"]
         idx_rows = [
             idx_hdr,
             ["Observation Start",
              _fmt_date(result.get("obs_start_date")),
+             _fmt_pct_value(daily_rows[0].get("sofr_rate")) if daily_rows else "—",
              f"{result.get('index_start', '—')}"],
             ["Observation End",
              _fmt_date(result.get("obs_end_date")),
+             _fmt_pct_value(daily_rows[1].get("sofr_rate")) if len(daily_rows) > 1 else "—",
              f"{result.get('index_end', '—')}"],
         ]
-        idx_tbl = Table(idx_rows, colWidths=[W*0.25, W*0.35, W*0.40])
+        idx_tbl = Table(idx_rows, colWidths=[W*0.24, W*0.26, W*0.20, W*0.30], repeatRows=1)
         idx_tbl.setStyle(detail_tbl_style())
         story.append(idx_tbl)
+        story.append(Spacer(1, 10))
+    elif daily_rows:
+        if method == "Compounded in Arrears":
+            story.append(sect_header("Daily Compounding Details", c_green))
+            story.append(Spacer(1, 4))
+            hdr = ["Period Date", "Obs Date", "SOFR Rate", "Day Wt",
+                   "Daily Factor", "Running Product"]
+            rows = [
+                hdr,
+                *[
+                    [
+                        _fmt_date(row.get("date")),
+                        _fmt_date(row.get("obs_date")),
+                        _fmt_pct_value(row.get("sofr_rate")),
+                        str(row.get("day_weight", "—")),
+                        f"{float(row.get('daily_factor', 0)):.8f}",
+                        f"{float(row.get('running_product', 0)):.8f}",
+                    ]
+                    for row in daily_rows
+                ]
+            ]
+            tbl = Table(
+                rows,
+                colWidths=[W*0.16, W*0.16, W*0.14, W*0.10, W*0.20, W*0.24],
+                repeatRows=1
+            )
+        else:
+            story.append(sect_header("Daily Rate Details", c_purple))
+            story.append(Spacer(1, 4))
+            hdr = ["Period Date", "Obs Date", "SOFR Rate", "Day Wt",
+                   "Business Day", "Weighted Rate"]
+            rows = [
+                hdr,
+                *[
+                    [
+                        _fmt_date(row.get("date")),
+                        _fmt_date(row.get("obs_date")),
+                        _fmt_pct_value(row.get("sofr_rate")),
+                        str(row.get("day_weight", "—")),
+                        "Yes" if row.get("is_business_day", True) else "No",
+                        _fmt_pct_value(row.get("weighted_rate")),
+                    ]
+                    for row in daily_rows
+                ]
+            ]
+            tbl = Table(
+                rows,
+                colWidths=[W*0.18, W*0.18, W*0.16, W*0.10, W*0.14, W*0.24],
+                repeatRows=1
+            )
+
+        tbl.setStyle(detail_tbl_style())
+        story.append(tbl)
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(
+            "GF = Good Friday uses Thursday's rate if available, otherwise Wednesday's.",
+            s_footer
+        ))
         story.append(Spacer(1, 10))
 
     # ── Disclaimer / footer strip ────────────────────────────────────────────
