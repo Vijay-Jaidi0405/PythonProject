@@ -779,12 +779,12 @@ def _accrual_days(start: date, end: date) -> int:
     return (end - start).days
 
 
-def _deal_accrual_days(deal: dict, calendar_start: date, calendar_end: date,
-                       obs_start: date, obs_end: date) -> int:
-    basis = deal.get("accrual_day_basis") or "Calendar Days"
-    if basis == "Observation Period Days":
-        return _accrual_days(obs_start, obs_end)
-    return _accrual_days(calendar_start, calendar_end)
+def _interest_period_days(period_start: date, period_end: date) -> int:
+    return _accrual_days(period_start, period_end)
+
+
+def _observation_period_days(obs_start: date, obs_end: date) -> int:
+    return _accrual_days(obs_start, obs_end)
 
 
 def _iter_business_days(start: date, end: date,
@@ -996,7 +996,9 @@ def _calc_compounded(conn, deal: dict, p_start: date, p_end: date,
 
     obs_start = _shift_business_days_back(eff_start, lb, holiday_calendar=holiday_calendar)
     obs_end   = _shift_business_days_back(eff_end,   lb, holiday_calendar=holiday_calendar)
-    accrual   = _deal_accrual_days(deal, eff_start, eff_end, obs_start, obs_end)
+    interest_days = _interest_period_days(p_start, p_end)
+    observation_days = _observation_period_days(obs_start, obs_end)
+    accrual   = interest_days
 
     product    = 1.0
     daily_rows = []
@@ -1032,7 +1034,8 @@ def _calc_compounded(conn, deal: dict, p_start: date, p_end: date,
     comp_rate = product - 1.0
     ann_rate  = comp_rate * (dc / accrual) if accrual else 0.0
     interest  = deal["notional_amount"] * comp_rate
-    return comp_rate, ann_rate, interest, obs_start, obs_end, accrual, daily_rows
+    return (comp_rate, ann_rate, interest, obs_start, obs_end, accrual,
+            daily_rows, interest_days, observation_days)
 
 
 def _calc_simple_average(conn, deal: dict, p_start: date, p_end: date,
@@ -1042,7 +1045,9 @@ def _calc_simple_average(conn, deal: dict, p_start: date, p_end: date,
     use_obs_shift = deal.get("observation_shift") == "Y"
     obs_start = _shift_business_days_back(p_start, lb, holiday_calendar=holiday_calendar)
     obs_end   = _shift_business_days_back(p_end,   lb, holiday_calendar=holiday_calendar)
-    accrual   = _deal_accrual_days(deal, p_start, p_end, obs_start, obs_end)
+    interest_days = _interest_period_days(p_start, p_end)
+    observation_days = _observation_period_days(obs_start, obs_end)
+    accrual   = interest_days
 
     sum_w, sum_d = 0.0, 0
     daily_rows   = []
@@ -1077,7 +1082,8 @@ def _calc_simple_average(conn, deal: dict, p_start: date, p_end: date,
 
     avg_rate = (sum_w / sum_d / 100.0) if sum_d else 0.0
     interest = deal["notional_amount"] * avg_rate * accrual / dc
-    return avg_rate, avg_rate, interest, obs_start, obs_end, accrual, daily_rows
+    return (avg_rate, avg_rate, interest, obs_start, obs_end, accrual,
+            daily_rows, interest_days, observation_days)
 
 
 def _calc_index(conn, deal: dict, p_start: date, p_end: date,
@@ -1155,7 +1161,9 @@ def _calc_index(conn, deal: dict, p_start: date, p_end: date,
         return row["sofr_rate"] if row else None
 
     # Accrual days may be based on period dates or observation dates per deal setup.
-    accrual = _deal_accrual_days(deal, p_start, p_end, obs_start_d, obs_end_d)
+    interest_days = _interest_period_days(p_start, p_end)
+    observation_days = _observation_period_days(obs_start_d, obs_end_d)
+    accrual = interest_days
 
     if accrual <= 0:
         raise ValueError(
@@ -1186,7 +1194,8 @@ def _calc_index(conn, deal: dict, p_start: date, p_end: date,
     return (index_return, ann_rate, interest,
             obs_start_d, obs_end_d, accrual,
             daily_rows,
-            idx_start, idx_end)
+            idx_start, idx_end,
+            interest_days, observation_days)
 
 
 def _apply_daily_floor_rate(deal: dict, sofr_rate_pct: float) -> tuple[float, bool]:
@@ -1223,13 +1232,14 @@ def _calculate_interest_for_deal(conn, deal: dict, cusip: str,
     method = deal["calculation_method"]
 
     index_start = index_end = None
+    interest_period_days = observation_period_days = None
 
     if method == "Compounded in Arrears":
-        cr, ar, ia, obs_s, obs_e, acc, daily_rows =             _calc_compounded(conn, deal, p_start, p_end, dc)
+        cr, ar, ia, obs_s, obs_e, acc, daily_rows, interest_period_days, observation_period_days = _calc_compounded(conn, deal, p_start, p_end, dc)
     elif method == "Simple Average in Arrears":
-        cr, ar, ia, obs_s, obs_e, acc, daily_rows =             _calc_simple_average(conn, deal, p_start, p_end, dc)
+        cr, ar, ia, obs_s, obs_e, acc, daily_rows, interest_period_days, observation_period_days = _calc_simple_average(conn, deal, p_start, p_end, dc)
     elif method == "SOFR Index":
-        cr, ar, ia, obs_s, obs_e, acc, daily_rows, index_start, index_end =             _calc_index(conn, deal, p_start, p_end, dc)
+        cr, ar, ia, obs_s, obs_e, acc, daily_rows, index_start, index_end, interest_period_days, observation_period_days = _calc_index(conn, deal, p_start, p_end, dc)
     else:
         raise ValueError(f"Unknown method: {method}")
 
@@ -1267,6 +1277,8 @@ def _calculate_interest_for_deal(conn, deal: dict, cusip: str,
         "obs_start_date":      obs_s,
         "obs_end_date":        obs_e,
         "accrual_days":        acc,
+        "interest_period_days": interest_period_days,
+        "observation_period_days": observation_period_days,
         "day_count_basis":     dc,
         "benchmark_period_rate": cr,
         "benchmark_annualized_rate": ar,
@@ -1472,7 +1484,7 @@ def generate_schedule(conn, cusip: str, rebuild: bool = True):
         obs_s = _shift_business_days_back(eff_ps, lb, holiday_calendar=holiday_calendar)
         obs_e = _shift_business_days_back(eff_pe, lb, holiday_calendar=holiday_calendar)
 
-        acc   = _deal_accrual_days(deal, eff_ps, eff_pe, obs_s, obs_e)
+        acc   = _interest_period_days(ps, pe)
         unadj = pay_date   # payment date already adjusted in _gen_periods
         adj   = pay_date
 
@@ -1535,7 +1547,10 @@ def refresh_schedule_accruals(conn, cusip: str) -> int:
         eff_pe = date.fromisoformat(row["eff_period_end_date"])
         obs_s = date.fromisoformat(row["obs_start_date"])
         obs_e = date.fromisoformat(row["obs_end_date"])
-        accrual = _deal_accrual_days(deal, eff_ps, eff_pe, obs_s, obs_e)
+        accrual = _interest_period_days(
+            date.fromisoformat(row["period_start_date"]),
+            date.fromisoformat(row["period_end_date"])
+        )
         conn.execute(
             "UPDATE payment_schedule SET accrual_days=? WHERE schedule_id=?",
             (accrual, row["schedule_id"])

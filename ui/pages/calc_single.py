@@ -690,10 +690,16 @@ class CalcSinglePage(QWidget):
     <td style='padding:10px 14px; font-weight:600;'>ACT / {res['day_count_basis']}</td>
   </tr>
   <tr>
-    <td style='padding:10px 14px; color:#6B7280; font-size:12px;'>Accrual Basis</td>
-    <td style='padding:10px 14px; font-weight:600;'>{res.get('accrual_day_basis', 'Calendar Days')}</td>
-    <td style='padding:10px 14px; color:#6B7280; font-size:12px;'>Accrual Days</td>
+    <td style='padding:10px 14px; color:#6B7280; font-size:12px;'>Interest Period Days</td>
+    <td style='padding:10px 14px; font-weight:600;'>{res.get('interest_period_days', res['accrual_days'])}</td>
+    <td style='padding:10px 14px; color:#6B7280; font-size:12px;'>Accrual Days Used</td>
     <td style='padding:10px 14px; font-weight:600;'>{res['accrual_days']}</td>
+  </tr>
+  <tr style='background:#F1F5F9;'>
+    <td style='padding:10px 14px; color:#6B7280; font-size:12px;'>Observation Period Days</td>
+    <td style='padding:10px 14px; font-weight:600;'>{res.get('observation_period_days', '—')}</td>
+    <td style='padding:10px 14px; color:#6B7280; font-size:12px;'>Stored Basis</td>
+    <td style='padding:10px 14px; font-weight:600;'>{res.get('accrual_day_basis', 'Calendar Days')}</td>
   </tr>
 </table>
 
